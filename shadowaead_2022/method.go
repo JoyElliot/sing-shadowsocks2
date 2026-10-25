@@ -476,11 +476,20 @@ func (c *clientPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksad
 }
 
 func (c *clientPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
-	err = c.reader.ReadBuffer(buffer)
-	if err != nil {
+	start, length := buffer.Start(), buffer.Len()
+	for {
+		err = c.reader.ReadBuffer(buffer)
+		if err != nil {
+			return
+		}
+		destination, err = c.readPacket(buffer)
+		if err == ErrPacketIdNotUnique {
+			// Reject this datagram while preserving the association and headroom.
+			buffer.Resize(start, length)
+			continue
+		}
 		return
 	}
-	return c.readPacket(buffer)
 }
 
 func (c *clientPacketConn) readPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
@@ -614,22 +623,27 @@ func (c *clientPacketConn) readPacket(buffer *buf.Buffer) (destination M.Socksad
 }
 
 func (c *clientPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	n, err = c.reader.Read(p)
-	if err != nil {
+	for {
+		n, err = c.reader.Read(p)
+		if err != nil {
+			return
+		}
+		buffer := buf.As(p[:n])
+		destination, readErr := c.readPacket(buffer)
+		if readErr == ErrPacketIdNotUnique {
+			continue
+		}
+		if readErr != nil {
+			return 0, nil, readErr
+		}
+		if destination.IsFqdn() {
+			addr = destination
+		} else {
+			addr = destination.UDPAddr()
+		}
+		n = copy(p, buffer.Bytes())
 		return
 	}
-	buffer := buf.As(p[:n])
-	destination, err := c.readPacket(buffer)
-	if err != nil {
-		return 0, nil, err
-	}
-	if destination.IsFqdn() {
-		addr = destination
-	} else {
-		addr = destination.UDPAddr()
-	}
-	n = copy(p, buffer.Bytes())
-	return
 }
 
 func (c *clientPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
